@@ -2,89 +2,94 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import make_interp_spline
+from matplotlib.colors import LinearSegmentedColormap
 from bs4 import BeautifulSoup
+from io import StringIO  # For handling HTML as strings
 
-# 1. 爬取数据
-url = "https://www.hko.gov.hk/tide/eTPKtext2024.html"  # 示例网页链接
+# 1. Scrape data
+url = "https://www.hko.gov.hk/tide/eTPKtext2024.html"
 response = requests.get(url)
+
+# Check if the request was successful
+if response.status_code != 200:
+    print("Failed to retrieve the webpage.")
+    exit()
+
+# 2. Parse and read data
 soup = BeautifulSoup(response.content, 'html.parser')
+tables = soup.find_all("table")
 
-# 2. 分析和读取数据
-tables = soup.find_all("table")  # 获取所有表格
-
-# 3. 使数据矩阵化
+# 3. Convert tables to DataFrames
 data_frames = []
-for table in tables[:20]:  # 只取前20个表
-    df = pd.read_html(str(table))[0]
+for table in tables[:20]:  # Just take the first 20 tables
+    html_str = str(table)
+    df = pd.read_html(StringIO(html_str), flavor='bs4')[0]
     data_frames.append(df)
 
-# 合并所有数据
-full_data = pd.concat(data_frames)
+# Combine all data into a single DataFrame
+full_data = pd.concat(data_frames, ignore_index=True)
 
-# 4. 选择数据部分
-selected_data = full_data.iloc[:29, :3]  # 选择前29行和前3列
+# 4. Select relevant data
+selected_data = full_data.iloc[:29, :4]
 
-# 将数据列的名称翻译为英文（假设存在中文标题）
-selected_data.columns = ['Date', 'Time', 'Height(m)']
+# Rename columns for clarity
+selected_data.columns = ["Month", 'Date', 'Time', 'Height(m)']
 
-# 确保日期和时间列为字符串类型
-selected_data['Date'] = selected_data['Date'].astype(str)
+# Ensure Date and Time columns are strings
 selected_data['Time'] = selected_data['Time'].astype(str)
+selected_data['YMD'] = selected_data.apply(lambda row: f"{2024}-{row['Month']:02d}-{row['Date']:02d}", axis=1)
+selected_data['SJ'] = selected_data.apply(lambda row: f"{row['Time'].zfill(4)[:2]}:{row['Time'].zfill(4)[2:]}:00",
+                                          axis=1)
 
-# 5. 计算每天的潮汐平均值
-selected_data['DateTime'] = pd.to_datetime(selected_data['Date'] + ' ' + selected_data['Time'], errors='coerce')
-daily_means = selected_data.groupby(selected_data['DateTime'].dt.date)['Height(m)'].mean().reset_index()
-daily_means.columns = ['Date', 'AvgHeight']
+# 5. Calculate datetime values
+selected_data['YMDSJ'] = pd.to_datetime(selected_data['YMD'] + ' ' + selected_data['SJ'],
+                                        format='%Y-%m-%d %H:%M:%S',
+                                        errors='coerce')
 
-# 6. 用matplotlib做平滑曲线图并美化
-plt.figure(figsize=(16, 6))  # 增加图形宽度
+# Check if selected_data is not empty
+if selected_data.empty:
+    print("No valid data available after filtering.")
+else:
+    try:
+        print("Converted DateTime Column:", selected_data['YMDSJ'])
 
-# 绘制潮汐数据
-x = np.arange(len(selected_data))
-y = selected_data['Height(m)'].astype(float).values
+        # 6. Create a bubble chart with Matplotlib
+        plt.figure(figsize=(16, 6))
 
-# 使用B样条曲线平滑数据
-x_smooth = np.linspace(x.min(), x.max(), 300)
-spl = make_interp_spline(x, y, k=2)  # k=2 表示二次B样条
-y_smooth = spl(x_smooth)
+        # Define size of the bubbles based on tidal heights
+        sizes = selected_data['Height(m)'] * 500
 
-# 绘制平滑曲线
-plt.plot(x_smooth, y_smooth, label='Tidal Height', color='#4C9BE6')  # 使用新的蓝色
+        # Create a custom color map from #4C9BE6 to #BEE8E8
+        colors = LinearSegmentedColormap.from_list("custom_blue", ["#4C9BE6", "#BEE8E8"])
 
-# 填充曲线下方的渐变颜色
-plt.fill_between(x_smooth, y_smooth, color='#BEE8E8', alpha=0.4)  # 使用新颜色填充
+        # Normalize heights to map to colors
+        norm = plt.Normalize(vmin=selected_data['Height(m)'].min(), vmax=selected_data['Height(m)'].max())
+        color_values = colors(norm(selected_data['Height(m)']))  # Map the heights to colors
 
-# 绘制每天的潮汐平均值
-avg_x = pd.to_datetime(daily_means['Date']).map(pd.Timestamp.toordinal).values
-plt.scatter(avg_x, daily_means['AvgHeight'], color='#FC9871', label='Daily Avg Height', zorder=5)  # 新的橙色
+        # Create the bubble chart
+        scatter = plt.scatter(selected_data['YMDSJ'],
+                              np.zeros_like(selected_data['YMDSJ']),
+                              s=sizes,
+                              alpha=0.7,
+                              color=color_values,
+                              edgecolors="w",
+                              linewidth=2)
 
-# 标出最大值和最小值
-max_height = y_smooth.max()
-min_height = y_smooth.min()
-max_index = np.argmax(y_smooth)
-min_index = np.argmin(y_smooth)
+        # Add title and axis labels
+        plt.title('Matrix Bubble Chart of Tide Height Data', fontweight='bold', fontsize=16)
+        plt.xlabel('Date and Time', fontsize=10)
+        plt.ylabel('Tide Height (m)', fontsize=10)
 
-plt.scatter(x_smooth[max_index], max_height, color='#E995C9', label='Max Height', zorder=6)  # 新的粉色
-plt.scatter(x_smooth[min_index], min_height, color='#BEE8E8', label='Min Height', zorder=6)  # 新的绿色
+        # Add text labels above the bubbles
+        for i in range(len(selected_data)):
+            plt.text(selected_data['YMDSJ'].iloc[i], 0, f'{selected_data["Height(m)"].iloc[i]:.1f}',
+                     ha='center', va='bottom', fontsize=9)
 
-# 添加文本标注
-plt.text(x_smooth[max_index], max_height, f'Max: {max_height:.2f}', fontsize=9, ha='right', color='#E995C9')
-plt.text(x_smooth[min_index], min_height, f'Min: {min_height:.2f}', fontsize=9, ha='right', color='#87CEEB')
+            # Adjust x-axis label font size
+        plt.xticks(rotation=45, fontsize=8)
 
-# 图表美化
-plt.title('Tidal Data Analysis at Tai Po Kau (2024)', fontsize=22, fontweight='bold')
-plt.xlabel('Date and Time', fontsize=9)
-plt.ylabel('Height (m)', fontsize=9)
-
-# 设置横坐标的刻度、标签、旋转角度和字体大小
-plt.xticks(ticks=x[::2], labels=selected_data['Date'][::2] + ' ' + selected_data['Time'][::2], rotation=45, ha='right', fontsize=10)  # 每隔一个显示一个标签
-plt.yticks(fontsize=12)
-plt.legend(title='Tidal Heights', fontsize=9)
-
-# 增加网格线的宽度
-plt.grid(True, linestyle='--', alpha=0.6, linewidth=1.5)  # 设置宽度为1.5
-plt.tight_layout()
-
-# 显示图表
-plt.show()
+        # Show the plot
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print("Error while processing data:", str(e))
