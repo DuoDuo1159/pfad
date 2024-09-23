@@ -2,89 +2,99 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import make_interp_spline
 from bs4 import BeautifulSoup
+from io import StringIO  # For handling HTML as strings
 
-# 1. 爬取数据
-url = "https://www.hko.gov.hk/tide/eTPKtext2024.html"  # 示例网页链接
-response = requests.get(url)
-soup = BeautifulSoup(response.content, 'html.parser')
 
-# 2. 分析和读取数据
-tables = soup.find_all("table")  # 获取所有表格
+# Function to scrape data from a given URL
+def scrape_data(url):
+    response = requests.get(url)
+    if response.status_code != 200:
+        print(f"Failed to retrieve the webpage: {url}")
+        return None
+    soup = BeautifulSoup(response.content, 'html.parser')
+    tables = soup.find_all("table")  # Get all tables
+    data_frames = []
+    for table in tables[:20]:  # Just take the first 20 tables
+        html_str = str(table)  # Convert the table to string format
+        df = pd.read_html(StringIO(html_str), flavor='bs4')[0]  # Read table into DataFrame
+        data_frames.append(df)
+    return pd.concat(data_frames, ignore_index=True)  # Combine and reset index
 
-# 3. 使数据矩阵化
-data_frames = []
-for table in tables[:20]:  # 只取前20个表
-    df = pd.read_html(str(table))[0]
-    data_frames.append(df)
 
-# 合并所有数据
-full_data = pd.concat(data_frames)
+# 1. Scrape the first dataset
+url1 = "https://www.hko.gov.hk/tide/eTPKtext2024.html"  # Example webpage link
+full_data1 = scrape_data(url1)
 
-# 4. 选择数据部分
-selected_data = full_data.iloc[:29, :3]  # 选择前29行和前3列
+# 2. Process the first dataset
+if full_data1 is not None:
+    selected_data1 = full_data1.iloc[:29, :4]  # Choose the first 29 rows and first 4 columns
+    selected_data1.columns = ["Month", 'Date', 'Time', 'Height(m)']
+    selected_data1['Time'] = selected_data1['Time'].astype(str)
+    selected_data1['YMD'] = selected_data1.apply(lambda row: f"{2024}-{row['Month']:02d}-{row['Date']:02d}", axis=1)
+    selected_data1['SJ'] = selected_data1.apply(lambda row: f"{row['Time'].zfill(4)[:2]}:{row['Time'].zfill(4)[2:]}:00",
+                                                axis=1)
+    selected_data1['YMDSJ'] = pd.to_datetime(selected_data1['YMD'] + ' ' + selected_data1['SJ'],
+                                             format='%Y-%m-%d %H:%M:%S', errors='coerce')
 
-# 将数据列的名称翻译为英文（假设存在中文标题）
-selected_data.columns = ['Date', 'Time', 'Height(m)']
+# 3. Scrape the second dataset (same URL for demonstration, modify for different data)
+url2 = "https://www.hko.gov.hk/tide/eTPKtext2024.html"  # Modify this if you want a different dataset
+full_data2 = scrape_data(url2)
 
-# 确保日期和时间列为字符串类型
-selected_data['Date'] = selected_data['Date'].astype(str)
-selected_data['Time'] = selected_data['Time'].astype(str)
+# 4. Process the second dataset
+if full_data2 is not None:
+    selected_data2 = full_data2.iloc[29:58, :4]  # Choose the next 29 rows for comparison
+    selected_data2.columns = ["Month", 'Date', 'Time', 'Height(m)']
+    selected_data2['Time'] = selected_data2['Time'].astype(str)
+    selected_data2['YMD'] = selected_data2.apply(lambda row: f"{2024}-{row['Month']:02d}-{row['Date']:02d}", axis=1)
+    selected_data2['SJ'] = selected_data2.apply(lambda row: f"{row['Time'].zfill(4)[:2]}:{row['Time'].zfill(4)[2:]}:00",
+                                                axis=1)
+    selected_data2['YMDSJ'] = pd.to_datetime(selected_data2['YMD'] + ' ' + selected_data2['SJ'],
+                                             format='%Y-%m-%d %H:%M:%S', errors='coerce')
 
-# 5. 计算每天的潮汐平均值
-selected_data['DateTime'] = pd.to_datetime(selected_data['Date'] + ' ' + selected_data['Time'], errors='coerce')
-daily_means = selected_data.groupby(selected_data['DateTime'].dt.date)['Height(m)'].mean().reset_index()
-daily_means.columns = ['Date', 'AvgHeight']
+# Check if both datasets are not empty
+if selected_data1.empty or selected_data2.empty:
+    print("One or both datasets are empty or invalid.")
+else:
+    try:
+        # Print converted DateTime column for verification
+        print("Converted DateTime Column for Dataset 1:", selected_data1['YMDSJ'])
+        print("Converted DateTime Column for Dataset 2:", selected_data2['YMDSJ'])
 
-# 6. 用matplotlib做平滑曲线图并美化
-plt.figure(figsize=(16, 6))  # 增加图形宽度
+        # 5. Create a comparative horizontal bar plot with Matplotlib
+        width = 0.4  # Width of the bars
+        indices = np.arange(len(selected_data1))  # Y location for each bar
 
-# 绘制潮汐数据
-x = np.arange(len(selected_data))
-y = selected_data['Height(m)'].astype(float).values
+        plt.figure(figsize=(12, 8))  # Increase figure size
 
-# 使用B样条曲线平滑数据
-x_smooth = np.linspace(x.min(), x.max(), 300)
-spl = make_interp_spline(x, y, k=2)  # k=2 表示二次B样条
-y_smooth = spl(x_smooth)
+        # Plot tidal data for the first dataset (left)
+        bars1 = plt.barh(indices, selected_data1["Height(m)"], width, label='Database 1', color='#75C8AE', alpha=0.6)
 
-# 绘制平滑曲线
-plt.plot(x_smooth, y_smooth, label='Tidal Height', color='#4C9BE6')  # 使用新的蓝色
+        # Plot tidal data for the second dataset (right)
+        bars2 = plt.barh(indices, [-x for x in selected_data2["Height(m)"]], width, label='Database 2', color='#87CEEB')
 
-# 填充曲线下方的渐变颜色
-plt.fill_between(x_smooth, y_smooth, color='#B0DC66', alpha=0.4)  # 使用新颜色填充
+        # Add values next to each bar for the first dataset
+        for bar in bars1:
+            plt.text(bar.get_width(), bar.get_y() + bar.get_height() / 2, f'{bar.get_width():.2f}',
+                     va='center', fontsize=8)
 
-# 绘制每天的潮汐平均值
-avg_x = pd.to_datetime(daily_means['Date']).map(pd.Timestamp.toordinal).values
-plt.scatter(avg_x, daily_means['AvgHeight'], color='#FC9871', label='Daily Avg Height', zorder=5)  # 新的橙色
+            # Add values next to each bar for the second dataset
+        for bar in bars2:
+            plt.text(bar.get_width(), bar.get_y() + bar.get_height() / 2, f'{bar.get_width():.2f}',
+                     va='center', fontsize=8)
 
-# 标出最大值和最小值
-max_height = y_smooth.max()
-min_height = y_smooth.min()
-max_index = np.argmax(y_smooth)
-min_index = np.argmin(y_smooth)
+            # Add title and axis labels
+        plt.title('Comparative Tide Height Data', fontweight='bold', fontsize=18)
+        plt.xlabel('Tide Height (m)', fontsize=10)
+        plt.ylabel('Date and Time', fontsize=12)
 
-plt.scatter(x_smooth[max_index], max_height, color='#E995C9', label='Max Height', zorder=6)  # 新的粉色
-plt.scatter(x_smooth[min_index], min_height, color='#BEE8E8', label='Min Height', zorder=6)  # 新的绿色
+        # Set the y-ticks to show both datasets accurately
+        plt.yticks(indices + width / 2, selected_data1['YMDSJ'].dt.strftime('%Y-%m-%d %H:%M'))
 
-# 添加文本标注
-plt.text(x_smooth[max_index], max_height, f'Max: {max_height:.2f}', fontsize=9, ha='right', color='#E995C9')
-plt.text(x_smooth[min_index], min_height, f'Min: {min_height:.2f}', fontsize=9, ha='right', color='#BEE8E8')
+        # Add a legend
+        plt.legend()
+        plt.tight_layout()  # Adjust layout to fit labels
+        plt.show()
 
-# 图表美化
-plt.title('Tidal Data Analysis at Tai Po Kau (2024)', fontsize=22, fontweight='bold')
-plt.xlabel('Date and Time', fontsize=9)
-plt.ylabel('Height (m)', fontsize=9)
-
-# 设置横坐标的刻度、标签、旋转角度和字体大小
-plt.xticks(ticks=x[::2], labels=selected_data['Date'][::2] + ' ' + selected_data['Time'][::2], rotation=45, ha='right', fontsize=10)  # 每隔一个显示一个标签
-plt.yticks(fontsize=12)
-plt.legend(title='Tidal Heights', fontsize=9)
-
-# 增加网格线的宽度
-plt.grid(True, linestyle='--', alpha=0.6, linewidth=1.5)  # 设置宽度为1.5
-plt.tight_layout()
-
-# 显示图表
-plt.show()
+    except Exception as e:
+        print("Error while processing data:", str(e))
